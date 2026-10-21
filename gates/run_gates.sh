@@ -19,12 +19,21 @@ if [ -z "$SKILLS_DIR" ]; then
     [ -d "$d" ] && { SKILLS_DIR="$d"; break; }
   done
 fi
+EN="$HERE/check_slop_en.py"
+# 本仓库自带脚本：优先同仓 scripts/，否则退回已安装的 skill
+pick() {
+  local n="$1"
+  for c in "$ROOT/scripts/$n" "$SKILLS_DIR/novel-prose-density/scripts/$n" \
+           "$HOME/.agents/skills/novel-prose-density/scripts/$n"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return; }
+  done
+  printf '%s' "$ROOT/scripts/$n"
+}
+DP="$(pick check_prose_dense.py)"
+IN="$(pick check_intimacy.py)"
+
 HN="${HN:-$SKILLS_DIR/human-novel-writer/scripts}"
 SD="${SD:-$SKILLS_DIR/story-deslop/scripts}"
-DP="$ROOT/scripts/check_prose_dense.py"
-IN="$ROOT/scripts/check_intimacy.py"
-EN="$HERE/check_slop_en.py"
-
 FILE=""; FORCE=0; ZHUQUE=0; QUIET=0
 for a in "$@"; do
   case "$a" in
