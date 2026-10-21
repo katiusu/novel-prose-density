@@ -4,6 +4,17 @@
 
 适用：网文/短篇/严肃向皆可；奇幻、都市、悬疑、日常都按同一套骨架。
 
+## 硬约束：每次写完正文都要跑门
+
+这不是建议，是交付条件。写完任何小说正文（一章、一段、一处改写）都跑一次，`VERDICT: PASS` 才算完成：
+
+```bash
+bash gates/postwrite.sh 正文/第001章.md
+# RECEIPT: 第001章.md rc=0 VERDICT: PASS ... @ 2026-10-22 05:30:00
+```
+
+`FAIL` 就按命中条目改，改完重跑；回复里要带 `RECEIPT:` 行——没有回执等于没跑。Agent 侧把同一条写进 `AGENTS.md`，就不需要每次靠记忆提醒。
+
 ## 它治什么
 
 | 病征 | 规范 |
@@ -52,7 +63,12 @@ VERDICT: PASS
 ## 文件
 
 ```
-SKILL.md                     主规范（14 节）
+SKILL.md                     主规范（14 节），含强制交付门禁
+gates/                       门禁脚本包：总调度 + 写后回执 + 英文闸 + 覆盖对照表
+gates/run_gates.sh           按语言路由，逐闸执行，给总体裁决
+gates/postwrite.sh           跑门 + 落回执，末行输出 RECEIPT
+gates/check_slop_en.py       英文 AI 味闸（stop-slop 规则独立实现，MIT）
+gates/对齐表.md              与上游规则集的覆盖对照 + 冲突裁决
 references/intimacy.md       可选扩展：亲密场景的用词与节奏（独立，不读也可用全部主规则）
 scripts/check_prose_dense.py 风格层检查：句末单字／配额／逗号密度／题材词表探测
 scripts/check_intimacy.py    用词层检查：代称、语境指代（可选）
