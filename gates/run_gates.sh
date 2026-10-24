@@ -109,9 +109,9 @@ run_zh() {
     if [ -n "$out" ]; then
       summary=$(printf '%s' "$out" | "$PY" -c 'import json,sys
 d=json.load(sys.stdin); f=d["files"][0] if d["files"] else {}
-print(f.get("strong",0), f.get("sentences",0), f.get("mean_conc",0))' 2>/dev/null)
+print(f.get("strong",0), f.get("sentences",0), f.get("mean_conc",0), f.get("cdr"))' 2>/dev/null)
       set -- $summary
-      row syntax_tpl ok "复读句 $1/$2 浓度均值 $3（advisory）"
+      row syntax_tpl ok "复读句 $1/$2 浓度均值 $3 CDR=$4（advisory）"
       if [ $QUIET -eq 0 ] && [ "${1:-0}" -gt 0 ]; then
         printf '%s' "$out" | "$PY" -c 'import json,sys
 d=json.load(sys.stdin); f=d["files"][0] if d["files"] else {}
