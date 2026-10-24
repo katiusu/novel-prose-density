@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""句式模板检测 v2.0 —— 依据 arXiv 2407.00211 的句法模板方法（本地落地版）。
+"""句式模板检测 v2.1 —— 依据 arXiv 2407.00211 的句法模板方法（本地落地 + 人类校准）。
 
-论文口径的四个指标（全部输出）：
-  N    不同模板数（每个句子取 POS 5-gram 模板）
-  DTR  = N / 句数，不同模板率，越高说明越少重复
-  COV  = 高频模板（top 20%）占全部 n-gram 的比例，越高越模板化
-  H    = 模板分布熵，越低越集中
-  CDR  = 本章去重模板中能在人类基线里找到的比例（论文「交叉文档复用」的本地近似）
+论文口径的指标（全部输出）：
+  N    不同模板数（每句取 POS 5-gram 模板）
+  DTR  = N / 句数，不同模板率
+  COV  = 高频模板（top 20%）占全部 n-gram 的比例
+  H    = 模板分布熵
+  CDR  = 本章去重模板中能在人类基线里找到的比例（参考值，基线小不可当判据）
 
-判据（句级浓度）：
-  某句 5-gram 落在高频模板中的比例。>=0.5 强提示（复读句），0.3-0.5 弱提示。
+核心判据（相对判据，按句数校准）：
+  用 corpus/calibration.json（人类作品按句数分档的浓度分布 P10/P50/P90）比较。
+    >P90 → 【句式模板化】：AI 味结构特征，改骨架
+    P50–P90 → 【偏高】：回看强提示句
+    ≤P50 → 【正常】
+  固定阈值 0.5 只作句级定位用（哪几句最重复），不做全局判据——
+  人类真品在 300 句以上时句级浓度 >=0.5 是常态（实测上品寒士 30%、汪曾祺 39%）。
 
 n 实测（人类 20 句 vs 模板化 20 句，Δ浓度）：
   n=3 +0.09 / n=4 +0.17 / n=5 +0.21 / n=6 +0.18 / n=7 +0.10 → 默认 5。
 
 用法:
-  check_syntax_tpl.py <文件...> [--baseline 文件或目录] [--n 5] [--json] [--quiet]
-  --baseline 缺省指向本报仓库 corpus/human_baseline.md（人类基线）。
+  check_syntax_tpl.py <文件...> [--baseline 文件或目录] [--calibration 路径] [--no-calib] [--n 5] [--json] [--quiet]
 
 退出码：0 永远（advisory 层，不阻断交付）。
 """
@@ -38,6 +42,7 @@ DROP = set('w x') | set('，、；：。！？…—')
 TOP_PCT = 0.2
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASELINE = os.path.normpath(os.path.join(HERE, '..', 'corpus', 'human_baseline.md'))
+DEFAULT_CALIB = os.path.normpath(os.path.join(HERE, '..', 'corpus', 'calibration.json'))
 
 
 def split_sents(text):
@@ -70,8 +75,47 @@ def read_baseline(path):
     return None, 'missing'
 
 
-def advice(tpls, n):
-    """按命中模板的形态给改写建议（不是硬规则，是改写入口）。"""
+def load_calib(path):
+    try:
+        d = json.load(open(path, encoding='utf-8'))
+        return d.get('bins') or None
+    except Exception:
+        return None
+
+
+def calib_at(bins, n):
+    """按句数在相邻档之间线性插值出 P10/P50/P90。"""
+    if not bins:
+        return None
+    bs = sorted(bins, key=lambda b: b['n'])
+    if n <= bs[0]['n']:
+        return bs[0]
+    if n >= bs[-1]['n']:
+        return bs[-1]
+    for a, b in zip(bs, bs[1:]):
+        if a['n'] <= n <= b['n']:
+            t = (n - a['n']) / (b['n'] - a['n'])
+            m = {}
+            for key in ('p10', 'p50', 'p90'):
+                m[key] = a['mean_conc'][key] + t * (b['mean_conc'][key] - a['mean_conc'][key])
+            return {'n': n, 'mean_conc': m}
+    return bs[-1]
+
+
+def judge(conc, cal):
+    if not cal:
+        return None, None
+    p10, p50, p90 = cal['mean_conc']['p10'], cal['mean_conc']['p50'], cal['mean_conc']['p90']
+    if conc <= p10:
+        return 'normal', max(1, round(conc / max(1e-9, p10) * 10))
+    if conc <= p50:
+        return 'normal', round(10 + (conc - p10) / max(1e-9, p50 - p10) * 40)
+    if conc <= p90:
+        return 'high', round(50 + (conc - p50) / max(1e-9, p90 - p50) * 40)
+    return 'template', round(90 + min(1.0, (conc - p90) / max(1e-9, p90)) * 9)
+
+
+def advice(tpls):
     out = []
     if not tpls:
         return out
@@ -94,6 +138,8 @@ def main():
     ap.add_argument('files', nargs='+')
     ap.add_argument('--baseline', default=None,
                     help='基线文本（文件或目录）；缺省用 corpus/human_baseline.md，传 none 关闭 CDR')
+    ap.add_argument('--calibration', default=None, help='校准表路径；缺省 corpus/calibration.json')
+    ap.add_argument('--no-calib', action='store_true', help='关闭相对判据')
     ap.add_argument('--n', type=int, default=5)
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--quiet', action='store_true')
@@ -109,13 +155,16 @@ def main():
     base_text, base_src = read_baseline(bpath)
     if a.baseline == 'none':
         base_text, base_src = None, 'none'
-
     base_tpls = set()
     if base_text:
         for s in split_sents(base_text):
             base_tpls.update(ngrams(pos_seq(s), a.n))
 
-    report = {'n': a.n, 'top_pct': TOP_PCT, 'baseline': base_src, 'files': []}
+    bins = None if a.no_calib else load_calib(a.calibration or DEFAULT_CALIB)
+    calib_src = None if a.no_calib else (a.calibration or DEFAULT_CALIB)
+
+    report = {'n': a.n, 'top_pct': TOP_PCT, 'baseline': base_src,
+              'calibration': calib_src if bins else None, 'files': []}
     for path in a.files:
         sents = split_sents(load(path))
         rows = [ngrams(pos_seq(s), a.n) for s in sents]
@@ -130,34 +179,48 @@ def main():
         H = -sum(p * math.log(p, 2) for p in probs) / math.log(len(cnt), 2) if len(cnt) > 1 else 0.0
         cov = sum(v for t, v in cnt.items() if t in topK) / len(allg)
         cdr = (len(set(allg) & base_tpls) / len(set(allg))) if base_tpls else None
-
+        mean = sum(ratios) / len(ratios) if ratios else 0.0
         strong = [i for i, r in enumerate(ratios) if r >= 0.5]
         weak = [i for i, r in enumerate(ratios) if 0.3 <= r < 0.5]
-        mean = sum(ratios) / len(ratios) if ratios else 0.0
+
+        cal = calib_at(bins, len(sents)) if bins else None
+        level, pct = judge(mean, cal)
 
         entry = {
             'file': path, 'sentences': len(sents), 'templates': len(cnt),
             'dtr': round(len(cnt) / len(sents), 2), 'cov': round(cov, 2), 'H': round(H, 2),
             'cdr': None if cdr is None else round(cdr, 2),
-            'mean_conc': round(mean, 3), 'strong': len(strong), 'weak': len(weak),
+            'mean_conc': round(mean, 3),
+            'ref': None if not cal else {'n': cal['n'], 'p10': round(cal['mean_conc']['p10'], 3),
+                                         'p50': round(cal['mean_conc']['p50'], 3),
+                                         'p90': round(cal['mean_conc']['p90'], 3)},
+            'level': level, 'percentile': None if pct is None else round(pct),
+            'strong': len(strong), 'weak': len(weak),
             'notes': [{'idx': i + 1, 'conc': round(ratios[i], 2), 'sent': sents[i][:40],
                        'tpl': [t for t in rows[i] if t in topK][:3],
-                       'advice': advice([t for t in rows[i] if t in topK], a.n)} for i in strong],
+                       'advice': advice([t for t in rows[i] if t in topK])} for i in strong],
         }
         report['files'].append(entry)
 
         if not a.quiet:
-            print(f"\n[句式模板] {path}")
+            flag = {'template': '【句式模板化】', 'high': '【偏高】', 'normal': '【正常】'}.get(level or '', '')
+            cal_s = ''
+            if entry['ref']:
+                cal_s = f" 人类同规模 P10/P50/P90={entry['ref']['p10']}/{entry['ref']['p50']}/{entry['ref']['p90']} 分位~P{entry['percentile']}"
             cdr_s = f" CDR={entry['cdr']}" if entry['cdr'] is not None else ""
+            print(f"\n[句式模板] {path} {flag}")
             print(f"  句={len(sents)} 模板={len(cnt)} DTR={entry['dtr']} COV={entry['cov']} H={entry['H']}{cdr_s}")
-            print(f"  句级浓度均值={entry['mean_conc']}  强提示(>=0.5)={len(strong)}/{len(sents)}  弱提示(0.3-0.5)={len(weak)}")
+            print(f"  句级浓度均值={entry['mean_conc']}{cal_s}")
+            print(f"  强提示(>=0.5)={len(strong)}/{len(sents)}  弱提示(0.3-0.5)={len(weak)}")
             for n_ in entry['notes']:
                 print(f"    句{n_['idx']:>2} 浓度{n_['conc']:.2f} {n_['sent']}")
                 print(f"        高频模板: {', '.join(n_['tpl'])}")
                 if n_['advice']:
                     print(f"        修法: {'；'.join(n_['advice'])}")
-            if len(strong) / max(1, len(sents)) >= 0.3:
-                print("  提示：复读句占比 >=30%。只对强提示句换骨架（主谓→主谓补／状语前置／拆两句），不要整段重写。")
+            if level == 'template':
+                print("  提示：整体句式浓度超过人类同规模 P90，是 AI 味结构特征。按 §7.1 换骨架，别逐词换。")
+            elif level == 'high':
+                print("  提示：整体偏高，只看强提示句，别整段重写。")
     if a.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
