@@ -102,6 +102,21 @@ bash gates/postwrite.sh 正文/第NNN章.md
 - 中文稿走 prose_dense（风格层）+ intimacy（命中 R18 词表时自动叠加）；英文稿走 gates/check_slop_en.py。
 - 第三方闸门（density_check / check_prose / story-deslop）没装会标 `n/a` 跳过，本仓库自带的两道闸照常生效。
 
+### 8.2 句式模板层（advisory，不阻断）
+
+依据 arXiv 2407.00211 的句法模板思想，加了一层「句式复读」检测：
+
+```bash
+python3 scripts/check_syntax_tpl.py 正文/第NNN章.md                  # 单文件自基线
+python3 scripts/check_syntax_tpl.py 正文/第NNN章.md --baseline 正文/  # 项目/前文基线
+```
+
+- 口径：每句先转 12 类粗词性序列，取 **5-gram**；本文件（或 `--baseline` 文本）中频次最高的 top 20% 模板记为「高频模板」，**句级浓度 = 该句 5-gram 落在高频模板中的比例**。
+- n 依据实测（人类 20 句 vs 模板化 20 句，Δ浓度）：n=3 +0.09 / n=4 +0.17 / **n=5 +0.21** / n=6 +0.18 / n=7 +0.10。
+- 分级：**≥0.5 强提示（复读句）**、0.3–0.5 弱提示、<0.3 正常；`run_gates.sh` 里显示「复读句 N/M + 浓度均值」，不阻断交付。
+- 处理方式：只对强提示句**换句式骨架**（主谓→主谓补／状语前置／拆两句），不要整段重写——人类稿也有 3/20 句在 0.5 以上，整段重写会连带改坏正常文风。
+- 为什么不加依存句法：同语料实测依存弧 2-gram Δ浓度仅 +0.04、局部子树 −0.08，而要多背 2GB 运行时（LTP+torch）或 1.2GB 模型（HanLP）；POS 5-gram 已拿到全部有效区分度。
+
 ## 9. 自查脚本
 
 ```bash
@@ -112,6 +127,7 @@ python3 /root/.agents/skills/story-prose-dense/scripts/check_prose_dense.py 正�
 - **配额提示**：`充满`、`如同/仿佛`、`我能清晰地`、`才`、无谓刻度，超 §1.1 配额才提示，不判违规。
 - **密度提示**：逗号 >4.5/百字 提示（低于 2.5 会把句子压成名词串，同样回看）。
 - **R18 检测**：输出 `R18: yes|no`，`run_gates.sh` 据此决定要不要叠加露骨层。
+- **句式模板**：`scripts/check_syntax_tpl.py`，输出句级浓度与强提示句清单（advisory，不阻断）。
 
 ## 10. 可选扩展
 

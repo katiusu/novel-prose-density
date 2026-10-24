@@ -34,6 +34,7 @@ IN="$(pick check_intimacy.py)"
 
 HN="${HN:-$SKILLS_DIR/human-novel-writer/scripts}"
 SD="${SD:-$SKILLS_DIR/story-deslop/scripts}"
+ST="$(pick check_syntax_tpl.py)"
 FILE=""; FORCE=0; ZHUQUE=0; QUIET=0
 for a in "$@"; do
   case "$a" in
@@ -101,6 +102,24 @@ run_zh() {
   if [ $rc -ne 0 ]; then FAILED=1; row prose_dense FAIL "句末单字 $nq 处"
     [ $QUIET -eq 0 ] && printf '%s\n' "$out" | grep -E '\[强禁\]|配额提示|密度提示' | head -8 | sed "s/^/  ${RED}/;s/$/${RST}/"
   else row prose_dense ok "R18=$r18 提示 $(printf '%s\n' "$out" | grep -c '配额提示\|密度提示') 项"; fi
+
+  # 4.5 句式模板层（自带，advisory：复读句只提示不阻断）
+  if [ -f "$ST" ]; then
+    out=$("$PY" "$ST" "$FILE" --quiet --json 2>/dev/null)
+    if [ -n "$out" ]; then
+      summary=$(printf '%s' "$out" | "$PY" -c 'import json,sys
+d=json.load(sys.stdin); f=d["files"][0] if d["files"] else {}
+print(f.get("strong",0), f.get("sentences",0), f.get("mean_conc",0))' 2>/dev/null)
+      set -- $summary
+      row syntax_tpl ok "复读句 $1/$2 浓度均值 $3（advisory）"
+      if [ $QUIET -eq 0 ] && [ "${1:-0}" -gt 0 ]; then
+        printf '%s' "$out" | "$PY" -c 'import json,sys
+d=json.load(sys.stdin); f=d["files"][0] if d["files"] else {}
+for n in f.get("notes",[])[:6]:
+    print("  句%3d 浓度%.2f %s" % (n["idx"], n["conc"], n["sent"]))' 2>/dev/null | sed "s/^/  /"
+      fi
+    else row syntax_tpl n/a "jieba 缺失"; fi
+  fi
 
   # 5. 可选：亲密场景用词层（R18 命中自动叠加，--intimacy 强制）
   if { [ $FORCE -eq 1 ] || [ "$r18" = yes ]; } && [ -f "$IN" ]; then
