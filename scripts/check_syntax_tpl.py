@@ -185,6 +185,9 @@ def main():
 
         cal = calib_at(bins, len(sents)) if bins else None
         level, pct = judge(mean, cal)
+        # 短样本（作文常见 10–40 句）：文件级判定波动大，降级为 short，只给句级榜单
+        if len(sents) < 40 and level in ('template', 'high'):
+            level = 'short'
 
         entry = {
             'file': path, 'sentences': len(sents), 'templates': len(cnt),
@@ -203,7 +206,8 @@ def main():
         report['files'].append(entry)
 
         if not a.quiet:
-            flag = {'template': '【句式模板化】', 'high': '【偏高】', 'normal': '【正常】'}.get(level or '', '')
+            flag = {'template': '【句式模板化】', 'high': '【偏高】', 'normal': '【正常】',
+                    'short': '【样本短，看句级榜单】'}.get(level or '', '')
             cal_s = ''
             if entry['ref']:
                 cal_s = f" 人类同规模 P10/P50/P90={entry['ref']['p10']}/{entry['ref']['p50']}/{entry['ref']['p90']} 分位~P{entry['percentile']}"
@@ -221,6 +225,8 @@ def main():
                 print("  提示：整体句式浓度超过人类同规模 P90，是 AI 味结构特征。按 §7.1 换骨架，别逐词换。")
             elif level == 'high':
                 print("  提示：整体偏高，只看强提示句，别整段重写。")
+            elif level == 'short':
+                print("  提示：样本不足 40 句，文件级判定只作参考（人类 20 句档的 P10–P90 就很宽）；以上面的强提示句为准。")
     if a.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0

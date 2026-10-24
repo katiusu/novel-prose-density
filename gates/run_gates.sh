@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 文风门禁总调度：按语言路由，逐闸执行，给总体裁决。
-#   run_gates.sh <文件> [--intimacy|--erotica] [--zhuque] [--quiet]
+#   run_gates.sh <文件> [--essay] [--intimacy|--erotica] [--zhuque] [--quiet]
 #
 # 闸门（中文）：density_check → check_prose → story-deslop(blocking)
 #               → prose_dense（本仓库）→ [亲密词表命中时自动叠加 intimacy 层] → [朱雀]
@@ -36,17 +36,19 @@ HN="${HN:-$SKILLS_DIR/human-novel-writer/scripts}"
 SD="${SD:-$SKILLS_DIR/story-deslop/scripts}"
 ST="$(pick check_syntax_tpl.py)"
 SC="$(pick check_style_consistency.py)"
-FILE=""; FORCE=0; ZHUQUE=0; QUIET=0
+ES="$(pick check_essay_slop.py)"
+FILE=""; FORCE=0; ZHUQUE=0; QUIET=0; GENRE=fiction
 for a in "$@"; do
   case "$a" in
     --intimacy|--erotica) FORCE=1 ;;
     --zhuque) ZHUQUE=1 ;;
     --quiet)  QUIET=1 ;;
+    --essay)  GENRE=essay ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) FILE="$a" ;;
   esac
 done
-[ -z "$FILE" ] && { echo "usage: $0 <file> [--intimacy] [--zhuque] [--quiet]" >&2; exit 2; }
+[ -z "$FILE" ] && { echo "usage: $0 <file> [--essay] [--intimacy] [--zhuque] [--quiet]" >&2; exit 2; }
 [ -f "$FILE" ] || { echo "no such file: $FILE" >&2; exit 2; }
 
 read -r HAN TOTAL < <("$PY" - "$FILE" <<'PYX'
@@ -70,6 +72,19 @@ row() { ROWS+=("$(printf '%-18s %-6s %s' "$1" "$2" "$3")"); }
 
 run_zh() {
   local out rc concl xfail sum b a nq r18 n
+  if [ "$GENRE" = "essay" ]; then
+    if [ -f "$HN/density_check.py" ]; then
+      out=$("$PY" "$HN/density_check.py" "$FILE" 2>&1)
+      hits=$(printf '%s\n' "$out" | grep -E '禁词: .*FAIL|零频套语\(硬\): [1-9]|三连排比: [1-9]|破折号: [1-9]' | grep -v '✓')
+      if [ -n "$hits" ]; then
+        FAILED=1
+        row density_check FAIL "作文模式：$(printf '%s' "$hits" | tr '\n' ' ' | cut -c1-64)"
+        [ $QUIET -eq 0 ] && printf '%s\n' "$hits" | sed "s/^/  ${RED}/;s/$/${RST}/"
+      else row density_check ok "作文模式：禁词/套语/排比 0"; fi
+    else row density_check n/a "未安装 human-novel-writer"; fi
+    row check_prose n/a "--essay：网文翻案腔闸不适用"
+    row story-deslop n/a "--essay：网文结构闸不适用"
+  else
   # 1. 网文硬红线（第三方，可选）
   if [ -f "$HN/density_check.py" ]; then
     out=$("$PY" "$HN/density_check.py" "$FILE" 2>&1); rc=$?
@@ -95,6 +110,7 @@ run_zh() {
       [ $QUIET -eq 0 ] && printf '%s\n' "$out" | grep '\[blocking\]' | head -12 | sed "s/^/  ${RED}/;s/$/${RST}/"
     else row story-deslop ok "blocking=0 advisory=$a"; fi
   else row story-deslop n/a "未安装 story-deslop 或无 node"; fi
+  fi
 
   # 4. 本仓库风格层（自带）
   out=$("$PY" "$DP" "$FILE" 2>&1); rc=$?
@@ -103,6 +119,22 @@ run_zh() {
   if [ $rc -ne 0 ]; then FAILED=1; row prose_dense FAIL "句末单字 $nq 处"
     [ $QUIET -eq 0 ] && printf '%s\n' "$out" | grep -E '\[强禁\]|配额提示|密度提示' | head -8 | sed "s/^/  ${RED}/;s/$/${RST}/"
   else row prose_dense ok "R18=$r18 提示 $(printf '%s\n' "$out" | grep -c '配额提示\|密度提示') 项"; fi
+
+  # 4.4 作文套话层（自带，advisory：强套密度判，人类用弱套不算）
+  if [ -f "$ES" ]; then
+    out=$("$PY" "$ES" "$FILE" --json 2>/dev/null)
+    if [ -n "$out" ]; then
+      summary=$(printf '%s' "$out" | "$PY" -c 'import json,sys
+f=json.load(sys.stdin)["files"][0]
+print(f.get("level","?"), f.get("strong",0), f.get("strong_per_k",0), f.get("weak",0))' 2>/dev/null)
+      set -- $summary
+      case "$1" in
+        bad)  row essay_slop FAIL "强套 $2 处（$3/千字）弱套 $4 处【作文套话过多】（advisory）" ;;
+        mild) row essay_slop warn "强套 $2 处（$3/千字）弱套 $4 处【提示】（advisory）" ;;
+        *)    row essay_slop ok "强套 $2 处（$3/千字）弱套 $4 处【干净】（advisory）" ;;
+      esac
+    fi
+  fi
 
   # 4.5 句式模板层（自带，advisory：复读句只提示不阻断）
   if [ -f "$ST" ]; then
@@ -115,6 +147,7 @@ print(f.get("strong",0), f.get("sentences",0), f.get("mean_conc",0), f.get("perc
       lv=$5; tag="【正常】"
       [ "$lv" = "high" ] && tag="【偏高】"
       [ "$lv" = "template" ] && tag="【句式模板化】"
+      [ "$lv" = "short" ] && tag="【样本短·看句级】"
       row syntax_tpl ok "浓度均值 $3 人类分位~P$4$tag 复读句 $1/$2 CDR=$6（advisory）"
       if [ $QUIET -eq 0 ] && [ "${1:-0}" -gt 0 ]; then
         printf '%s' "$out" | "$PY" -c 'import json,sys
@@ -128,6 +161,7 @@ for n in f.get("notes",[])[:6]:
   # 4.6 文风一致性层（自带，advisory：本章 vs 同目录其他章节）
   if [ -f "$SC" ]; then
     out=$("$PY" "$SC" "$FILE" --ref "$(dirname "$FILE")" --json 2>/dev/null)
+    case "$out" in \{*) ;; *) row style_cons n/a "基线不足（同目录需其他文件）"; out="";; esac
     if [ -n "$out" ]; then
       summary=$(printf '%s' "$out" | "$PY" -c 'import json,sys
 d=json.load(sys.stdin); dr=d.get("drifted",[])
@@ -140,7 +174,7 @@ print(d.get("verdict","?")); print(len(dr)); print("、".join(dr[:3]) if dr else
         轻微漂移) row style_cons warn "轻微漂移 $scn 项：$scl" ;;
         *) row style_cons FAIL "明显漂移：$scl" ;;
       esac
-    else row style_cons n/a "基线不足"; fi
+    fi
   fi
 
   # 5. 可选：亲密场景用词层（R18 命中自动叠加，--intimacy 强制）
