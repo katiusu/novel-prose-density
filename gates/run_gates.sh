@@ -35,6 +35,7 @@ IN="$(pick check_intimacy.py)"
 HN="${HN:-$SKILLS_DIR/human-novel-writer/scripts}"
 SD="${SD:-$SKILLS_DIR/story-deslop/scripts}"
 ST="$(pick check_syntax_tpl.py)"
+SC="$(pick check_style_consistency.py)"
 FILE=""; FORCE=0; ZHUQUE=0; QUIET=0
 for a in "$@"; do
   case "$a" in
@@ -122,6 +123,24 @@ for n in f.get("notes",[])[:6]:
     print("  句%3d 浓度%.2f %s" % (n["idx"], n["conc"], n["sent"]))' 2>/dev/null | sed "s/^/  /"
       fi
     else row syntax_tpl n/a "jieba 缺失"; fi
+  fi
+
+  # 4.6 文风一致性层（自带，advisory：本章 vs 同目录其他章节）
+  if [ -f "$SC" ]; then
+    out=$("$PY" "$SC" "$FILE" --ref "$(dirname "$FILE")" --json 2>/dev/null)
+    if [ -n "$out" ]; then
+      summary=$(printf '%s' "$out" | "$PY" -c 'import json,sys
+d=json.load(sys.stdin); dr=d.get("drifted",[])
+print(d.get("verdict","?")); print(len(dr)); print("、".join(dr[:3]) if dr else "无")' 2>/dev/null)
+      scv=$(printf '%s\n' "$summary" | sed -n 1p)
+      scn=$(printf '%s\n' "$summary" | sed -n 2p)
+      scl=$(printf '%s\n' "$summary" | sed -n 3p)
+      case "$scv" in
+        一致) row style_cons ok "一致" ;;
+        轻微漂移) row style_cons warn "轻微漂移 $scn 项：$scl" ;;
+        *) row style_cons FAIL "明显漂移：$scl" ;;
+      esac
+    else row style_cons n/a "基线不足"; fi
   fi
 
   # 5. 可选：亲密场景用词层（R18 命中自动叠加，--intimacy 强制）
